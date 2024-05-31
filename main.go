@@ -1,15 +1,25 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"log"
 	"net/http"
 	"os"
+	"time"
 
+	"github.com/asasmith/rss-agg-go/internal/database"
 	"github.com/go-chi/chi"
 	"github.com/go-chi/cors"
+	"github.com/google/uuid"
 	"github.com/joho/godotenv"
+
+	_ "github.com/lib/pq"
 )
+
+type apiConfig struct {
+	DB *database.Queries
+}
 
 func main() {
 	godotenv.Load(".env")
@@ -18,6 +28,24 @@ func main() {
 
 	if portString == "" {
 		log.Fatal("PORT not found in .env")
+	}
+
+	dbUrl := os.Getenv("DB_CONNECTION_STRING")
+
+	if dbUrl == "" {
+		log.Fatal("DB_CONNECTION_STRING not found in .env")
+	}
+
+	db, err := sql.Open("postgres", dbUrl)
+
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	dbQueries := database.New(db)
+
+	apiConfig := apiConfig{
+		DB: dbQueries,
 	}
 
 	router := chi.NewRouter()
@@ -37,6 +65,8 @@ func main() {
 	v1Router.Get("/health", healthResponseHandler)
 	v1Router.Get("/err", errorResponseHandler)
 
+	v1Router.Post("/users", apiConfig.createUserHandler)
+
 	router.Mount("/v1", v1Router)
 
 	server := &http.Server{
@@ -45,12 +75,7 @@ func main() {
 	}
 
 	log.Printf("Server listening on port %v\n", portString)
-
-	err := server.ListenAndServe()
-
-	if err != nil {
-		log.Fatal(err)
-	}
+	log.Fatal(server.ListenAndServe())
 }
 
 func respondWithJSON(w http.ResponseWriter, status int, payload interface{}) {
@@ -85,4 +110,32 @@ func healthResponseHandler(w http.ResponseWriter, r *http.Request) {
 
 func errorResponseHandler(w http.ResponseWriter, r *http.Request) {
 	respondWithError(w, http.StatusInternalServerError, "something went wrong")
+}
+
+func (cfg *apiConfig) createUserHandler(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Name string
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+	err := decoder.Decode(&params)
+
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "couldn't decode parameters")
+	}
+
+	user, err := cfg.DB.CreateUser(r.Context(), database.CreateUserParams{
+		ID:        uuid.New(),
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+		Name:      params.Name,
+	})
+
+	if err != nil {
+		log.Println(err)
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create user")
+	}
+
+	respondWithJSON(w, http.StatusOK, databaseUserToUser(user))
 }
